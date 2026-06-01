@@ -33,6 +33,24 @@ map_colors = ['blue', 'green', 'red']
 # set once when the map expansion pack is missing, to warn only a single time
 _MAP_MISSING_WARNED = False
 
+
+def resolve_img_path(data_path, data_root):
+    """Resolve a camera image path against the actual --data-root.
+
+    The info pkl stores data_path as it was at dataset-creation time (e.g.
+    './data/nuscenes/samples/CAM_FRONT_LEFT/xxx.jpg'), which often does not
+    match where the images actually live now. If the stored path is not a real
+    file, re-anchor the 'samples/' (or 'sweeps/') sub-path onto data_root.
+    """
+    if os.path.isfile(data_path):
+        return data_path
+    p = data_path.replace('\\', '/')
+    for key in ('samples/', 'sweeps/'):
+        i = p.find(key)
+        if i != -1:
+            return os.path.join(data_root, p[i:])
+    return data_path  # give up; let the caller raise a clear FileNotFoundError
+
 agent_color_dict={
     'car': 'cyan', 
     'truck': 'orange', 
@@ -520,7 +538,7 @@ if __name__ == '__main__':
             if sensor_modality in ['lidar', 'radar']:
                 assert False
             elif sensor_modality == 'camera':
-                img_path = cam_metas[cam]['data_path']
+                img_path = resolve_img_path(cam_metas[cam]['data_path'], data_root)
                 camera_intrinsic = cam_metas[cam]['cam_intrinsic']
                 data = Image.open(img_path)
  
