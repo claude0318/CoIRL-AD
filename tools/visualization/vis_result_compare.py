@@ -344,6 +344,19 @@ def proj_traj2front_camera(traj, lidar2img_rt, ax, linestyle, label):
 def parse_args():
     parser = argparse.ArgumentParser(description='Visualize VAD predictions')
     parser.add_argument('--save-path', help='the dir to save visualization results')
+    parser.add_argument('--version', default='v1.0-trainval',
+                        help="nuScenes version, e.g. 'v1.0-trainval' or 'v1.0-mini'")
+    parser.add_argument('--data-root', default=None,
+                        help='override the nuScenes dataroot (default: module-level data_root)')
+    parser.add_argument('--info-path', default=None,
+                        help='override the info pkl path (default: module-level info_path)')
+    parser.add_argument('--output-result-path', default=None,
+                        help='override results.pkl path (default: module-level output_result_path)')
+    parser.add_argument('--scene-names', default=None,
+                        help='comma-separated scene names to keep, e.g. '
+                             '"scene-0103,scene-0916" (the two mini_val scenes)')
+    parser.add_argument('--sample-tokens', default=None,
+                        help='comma-separated sample tokens to keep')
     args = parser.parse_args()
 
     return args
@@ -354,10 +367,19 @@ if __name__ == '__main__':
     out_path = args.save_path
     mmcv.mkdir_or_exist(out_path)
 
+    # allow overriding the module-level path/version constants from the CLI,
+    # so you can point at a v1.0-mini dataset without editing this file
+    if args.data_root is not None:
+        data_root = args.data_root
+    if args.info_path is not None:
+        info_path = args.info_path
+    if args.output_result_path is not None:
+        output_result_path = args.output_result_path
+
     with open(info_path, 'rb') as f:
         info_data = pickle.load(f)
         info_data = info_data['infos'] # list of dict [{}, ...] with keys(): dict_keys(['lidar_path', 'token', 'prev', 'next', 'can_bus', 'frame_idx', 'sweeps', 'cams', 'scene_token', 'lidar2ego_translation', 'lidar2ego_rotation', 'ego2global_translation', 'ego2global_rotation', 'timestamp', 'fut_valid_flag', 'map_location', 'gt_boxes', 'gt_names', 'gt_velocity', 'num_lidar_pts', 'num_radar_pts', 'valid_flag', 'gt_agent_fut_trajs', 'gt_agent_fut_masks', 'gt_agent_lcf_feat', 'gt_agent_fut_yaw', 'gt_agent_fut_goal', 'gt_ego_his_trajs', 'gt_ego_fut_trajs', 'gt_ego_fut_masks', 'gt_ego_fut_cmd', 'gt_ego_lcf_feat'])
-    if results_path == "":
+    if baseline_result_path == "":
         baseline_result = None
     else:
         with open(baseline_result_path, 'rb') as f:
@@ -365,8 +387,26 @@ if __name__ == '__main__':
     with open(output_result_path, 'rb') as f:
         output_result = pickle.load(f) # dict, with key=sample_token, value is a dict with keys: ['scene_token', eval_metrics, 'ego_fut_traj']
 
-    nusc = NuScenes(version='v1.0-trainval', dataroot=data_root, verbose=True)
-    
+    nusc = NuScenes(version=args.version, dataroot=data_root, verbose=True)
+
+    # sample tokens actually present in this nuScenes version (a v1.0-mini
+    # install only contains 10 scenes, of which scene-0103 & scene-0916 are the
+    # mini_val scenes that overlap with the val results.pkl)
+    available_sample_tokens = {s['token'] for s in nusc.sample}
+
+    # optional explicit filtering by scene name and/or sample token
+    target_scene_tokens = None
+    if args.scene_names:
+        wanted = {n.strip() for n in args.scene_names.split(',') if n.strip()}
+        target_scene_tokens = {sc['token'] for sc in nusc.scene if sc['name'] in wanted}
+        found = {sc['name'] for sc in nusc.scene if sc['name'] in wanted}
+        missing = wanted - found
+        if missing:
+            print(f'[warn] scene names not in this version, ignored: {sorted(missing)}')
+    target_sample_tokens = None
+    if args.sample_tokens:
+        target_sample_tokens = {t.strip() for t in args.sample_tokens.split(',') if t.strip()}
+
     fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
 
     scene_token_vised = ""
@@ -376,6 +416,19 @@ if __name__ == '__main__':
         fut_valid_flag = info_data[idx]['fut_valid_flag']
         sample_token = info_data[idx]['token']
         scene_token = info_data[idx]['scene_token']
+
+        # skip samples that cannot or should not be rendered:
+        # 1) not present in this nuScenes version (e.g. not in v1.0-mini)
+        # 2) no prediction for it in results.pkl
+        # 3) excluded by the --scene-names / --sample-tokens filters
+        if sample_token not in available_sample_tokens:
+            continue
+        if sample_token not in output_result:
+            continue
+        if target_scene_tokens is not None and scene_token not in target_scene_tokens:
+            continue
+        if target_sample_tokens is not None and sample_token not in target_sample_tokens:
+            continue
         ego_fut_cmd = info_data[idx]['gt_ego_fut_cmd'] # e.g. array([0., 0., 1.], dtype=float32)
         cam_metas = info_data[idx]['cams']
 
