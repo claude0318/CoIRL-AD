@@ -30,6 +30,9 @@ from projects.mmdet3d_plugin.datasets.nuscenes_vad_dataset import VectorizedLoca
 # Define colors for map lines and agents
 map_colors = ['blue', 'green', 'red']
 
+# set once when the map expansion pack is missing, to warn only a single time
+_MAP_MISSING_WARNED = False
+
 agent_color_dict={
     'car': 'cyan', 
     'truck': 'orange', 
@@ -153,15 +156,28 @@ def get_gt_vec_maps(
     patch_w = pc_range[3]-pc_range[0]
     patch_size = (patch_h, patch_w)
 
-    vector_map = VectorizedLocalMap(data_root, patch_size=patch_size,
-                                    map_classes=map_classes, 
-                                    fixed_ptsnum_per_line=map_fixed_ptsnum_per_line,
-                                    padding_value=padding_value)
-
-
-    anns_results = vector_map.gen_vectorized_samples(
-        map_location, lidar2global_translation, lidar2global_rotation
-    )
+    try:
+        # NOTE: VectorizedLocalMap loads the map-expansion JSONs in its __init__,
+        # so the FileNotFoundError can be raised here as well as in
+        # gen_vectorized_samples below.
+        vector_map = VectorizedLocalMap(data_root, patch_size=patch_size,
+                                        map_classes=map_classes,
+                                        fixed_ptsnum_per_line=map_fixed_ptsnum_per_line,
+                                        padding_value=padding_value)
+        anns_results = vector_map.gen_vectorized_samples(
+            map_location, lidar2global_translation, lidar2global_rotation
+        )
+    except FileNotFoundError as e:
+        # map expansion pack is not part of v1.0-mini.tgz; degrade gracefully
+        # and render camera images + trajectories without the GT vector map
+        global _MAP_MISSING_WARNED
+        if not _MAP_MISSING_WARNED:
+            print(f"\n[warn] map expansion file not found ({getattr(e, 'filename', e)}); "
+                  "rendering WITHOUT the GT vector map. To draw maps, download "
+                  "nuScenes-map-expansion-v1.3 and unzip its 'maps/' into "
+                  "<dataroot>/maps.")
+            _MAP_MISSING_WARNED = True
+        return None, None
     
     '''
     anns_results, type: dict
@@ -207,7 +223,12 @@ def visualize_sample_perception_free(
     plt.xlim(xmin=-30, xmax=30)
     plt.ylim(ymin=-30, ymax=30)
 
-    map_gt_lines = [np.array(line.coords) for line in gt_vecs_pts_loc.instance_list]
+    if gt_vecs_pts_loc is None:
+        # map expansion pack unavailable -> draw no map lines
+        map_gt_lines = []
+        gt_vecs_label = []
+    else:
+        map_gt_lines = [np.array(line.coords) for line in gt_vecs_pts_loc.instance_list]
 
     # === Plot map lines ===
     for line, label in zip(map_gt_lines, gt_vecs_label):
