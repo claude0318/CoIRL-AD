@@ -2,7 +2,12 @@ import sys
 sys.path.append('')
 import os
 import argparse
+import warnings
 import os.path as osp
+
+# harmless matplotlib warning emitted when a subplot calls legend() but has no
+# labeled artists (e.g. samples without a baseline trajectory or an empty map)
+warnings.filterwarnings('ignore', message='No artists with labels found to put in legend')
 from PIL import Image
 from tqdm import tqdm
 from typing import List, Dict
@@ -446,6 +451,26 @@ if __name__ == '__main__':
     if args.sample_tokens:
         target_sample_tokens = {t.strip() for t in args.sample_tokens.split(',') if t.strip()}
 
+    def keep(tok, sct):
+        if tok not in available_sample_tokens or tok not in output_result:
+            return False
+        if target_scene_tokens is not None and sct not in target_scene_tokens:
+            return False
+        if target_sample_tokens is not None and tok not in target_sample_tokens:
+            return False
+        return True
+
+    # how many samples we will actually render, so we can stop as soon as they
+    # are all done instead of scanning the remaining (thousands of) val samples
+    num_to_render = sum(1 for it in info_data if keep(it['token'], it['scene_token']))
+    if num_to_render == 0:
+        print('[error] no samples to render after filtering; check '
+              '--scene-names/--sample-tokens, --version and results.pkl coverage.')
+        sys.exit(1)
+    print(f'[info] will render {num_to_render} sample(s); the script exits as '
+          'soon as they are done.')
+    rendered = 0
+
     fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
 
     scene_token_vised = ""
@@ -641,6 +666,12 @@ if __name__ == '__main__':
         cv2.imwrite(fig_save_path, vis_img)  # concat_img is the result of hconcat
 
         video.write(vis_img)
-    
+
+        rendered += 1
+        if rendered >= num_to_render:
+            # all requested samples rendered; stop early instead of scanning
+            # the rest of the val set
+            break
+
     video.release()
     cv2.destroyAllWindows()
